@@ -7,6 +7,7 @@ https://developer.apple.com/library/content/documentation/NetworkingInternet/Con
 import time
 
 from apns2 import client as apns2_client
+from apns2 import credentials as apns2_credentials
 from apns2 import errors as apns2_errors
 from apns2 import payload as apns2_payload
 
@@ -29,10 +30,21 @@ class APNSServerError(APNSError):
 		self.status = status
 
 
-def _apns_create_socket(certfile=None, application_id=None):
-	certfile = certfile or get_manager().get_apns_certificate(application_id)
+def _apns_create_socket(creds=None, application_id=None):
+	if creds is None:
+		if not get_manager().has_auth_token_creds(application_id):
+			cert = get_manager().get_apns_certificate(application_id)
+			creds = apns2_credentials.CertificateCredentials(cert)
+		else:
+			keyPath, keyId, teamId = get_manager().get_apns_auth_creds(application_id)
+			# No use getting a lifetime because this credential is
+			# ephemeral, but if you're looking at this to see how to
+			# create a credential, you could also pass the lifetime and
+			# algorithm. Neither of those settings are exposed in the
+			# settings API at the moment.
+			creds = creds or apns2_credentials.TokenCredentials(keyPath, keyId, teamId)
 	client = apns2_client.APNsClient(
-		certfile,
+		creds,
 		use_sandbox=get_manager().get_apns_use_sandbox(application_id),
 		use_alternative_port=get_manager().get_apns_use_alternative_port(application_id)
 	)
@@ -51,18 +63,19 @@ def _apns_prepare(
 		else:
 			apns2_alert = alert
 
-			if callable(badge):
-				badge = badge(token)
+		if callable(badge):
+			badge = badge(token)
 
 		return apns2_payload.Payload(
-			apns2_alert, badge, sound, content_available, mutable_content, category,
-			url_args, custom=extra, thread_id=thread_id)
+			alert=apns2_alert, badge=badge, sound=sound, category=category,
+			url_args=url_args, custom=extra, thread_id=thread_id,
+			content_available=content_available, mutable_content=mutable_content)
 
 
 def _apns_send(
-	registration_id, alert, batch=False, application_id=None, certfile=None, topic=None, **kwargs
+	registration_id, alert, batch=False, application_id=None, creds=None, **kwargs
 ):
-	client = _apns_create_socket(certfile=certfile, application_id=application_id)
+	client = _apns_create_socket(creds=creds, application_id=application_id)
 
 	notification_kwargs = {}
 
@@ -78,12 +91,17 @@ def _apns_send(
 		except ValueError:
 			raise APNSUnsupportedPriority("Unsupported priority %d" % (priority))
 
+	topic = kwargs.pop("topic", None)
 	if topic is None:
 		topic = get_manager().get_apns_topic(application_id=application_id)
+
+	notification_kwargs["collapse_id"] = kwargs.pop("collapse_id", None)
 
 	if batch:
 		data = [apns2_client.Notification(
 			token=rid, payload=_apns_prepare(rid, alert, **kwargs)) for rid in registration_id]
+		# returns a dictionary mapping each token to its result. That
+		# result is either "Success" or the reason for the failure.
 		return client.send_notification_batch(
 			data, topic,
 			**notification_kwargs
@@ -97,9 +115,7 @@ def _apns_send(
 	)
 
 
-def apns_send_message(
-	registration_id, alert, application_id=None, certfile=None, topic=None, **kwargs
-):
+def apns_send_message(registration_id, alert, application_id=None, creds=None, **kwargs):
 	"""
 	Sends an APNS notification to a single registration_id.
 	This will send the notification as form data.
@@ -114,7 +130,7 @@ def apns_send_message(
 	try:
 		_apns_send(
 			registration_id, alert, application_id=application_id,
-			certfile=certfile, topic=topic, **kwargs
+			creds=creds, **kwargs
 		)
 	except apns2_errors.APNsException as apns2_exception:
 		if isinstance(apns2_exception, apns2_errors.Unregistered):
@@ -126,7 +142,7 @@ def apns_send_message(
 
 
 def apns_send_bulk_message(
-	registration_ids, alert, application_id=None, certfile=None, topic=None, **kwargs
+	registration_ids, alert, application_id=None, creds=None, **kwargs
 ):
 	"""
 	Sends an APNS notification to one or more registration_ids.
@@ -139,7 +155,7 @@ def apns_send_bulk_message(
 
 	results = _apns_send(
 		registration_ids, alert, batch=True, application_id=application_id,
-		certfile=certfile, topic=topic, **kwargs
+		creds=creds, **kwargs
 	)
 	inactive_tokens = [token for token, result in results.items() if result == "Unregistered"]
 	models.APNSDevice.objects.filter(registration_id__in=inactive_tokens).update(active=False)

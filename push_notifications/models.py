@@ -1,7 +1,4 @@
-from __future__ import unicode_literals
-
 from django.db import models
-from django.utils.encoding import python_2_unicode_compatible
 from django.utils.translation import ugettext_lazy as _
 
 from .fields import HexIntegerField
@@ -20,7 +17,6 @@ BROWSER_TYPES = (
 )
 
 
-@python_2_unicode_compatible
 class Device(models.Model):
 	name = models.CharField(max_length=255, verbose_name=_("Name"), blank=True, null=True)
 	active = models.BooleanField(
@@ -47,8 +43,9 @@ class Device(models.Model):
 
 	def __str__(self):
 		return (
-			self.name or str(self.device_id or "") or
-			"%s for %s" % (self.__class__.__name__, self.user or "unknown user")
+			self.name or
+			str(self.device_id or "") or
+			"{} for {}".format(self.__class__.__name__, self.user or "unknown user")
 		)
 
 
@@ -93,7 +90,7 @@ class GCMDevice(Device):
 		verbose_name=_("Device ID"), blank=True, null=True, db_index=True,
 		help_text=_("ANDROID_ID / TelephonyManager.getDeviceId() (always as hex)")
 	)
-	registration_id = models.TextField(verbose_name=_("Registration ID"))
+	registration_id = models.TextField(verbose_name=_("Registration ID"), unique=SETTINGS["UNIQUE_REG_ID"])
 	cloud_message_type = models.CharField(
 		verbose_name=_("Cloud Message Type"), max_length=3,
 		choices=CLOUD_MESSAGE_TYPES, default="GCM",
@@ -123,7 +120,7 @@ class APNSDeviceManager(models.Manager):
 
 
 class APNSDeviceQuerySet(models.query.QuerySet):
-	def send_message(self, message, certfile=None, topic=None, **kwargs):
+	def send_message(self, message, creds=None, **kwargs):
 		if self:
 			from .apns import apns_send_bulk_message
 
@@ -136,7 +133,7 @@ class APNSDeviceQuerySet(models.query.QuerySet):
 				)
 				r = apns_send_bulk_message(
 					registration_ids=reg_ids, alert=message, application_id=app_id,
-					certfile=certfile, topic=topic, **kwargs
+					creds=creds, **kwargs
 				)
 				if hasattr(r, "keys"):
 					res += [r]
@@ -151,7 +148,7 @@ class APNSDevice(Device):
 		help_text="UDID / UIDevice.identifierForVendor()"
 	)
 	registration_id = models.CharField(
-		verbose_name=_("Registration ID"), max_length=200, unique=True
+		verbose_name=_("Registration ID"), max_length=200, unique=SETTINGS["UNIQUE_REG_ID"]
 	)
 
 	objects = APNSDeviceManager()
@@ -159,13 +156,13 @@ class APNSDevice(Device):
 	class Meta:
 		verbose_name = _("APNS device")
 
-	def send_message(self, message, certfile=None, topic=None, **kwargs):
+	def send_message(self, message, creds=None, **kwargs):
 		from .apns import apns_send_message
 
 		return apns_send_message(
 			registration_id=self.registration_id,
-			alert=message, application_id=self.application_id,
-			certfile=certfile, topic=topic,
+			alert=message,
+			application_id=self.application_id, creds=creds,
 			**kwargs
 		)
 
@@ -201,7 +198,7 @@ class WNSDevice(Device):
 		verbose_name=_("Device ID"), blank=True, null=True, db_index=True,
 		help_text=_("GUID()")
 	)
-	registration_id = models.TextField(verbose_name=_("Notification URI"))
+	registration_id = models.TextField(verbose_name=_("Notification URI"), unique=SETTINGS["UNIQUE_REG_ID"])
 
 	objects = WNSDeviceManager()
 
@@ -233,7 +230,7 @@ class WebPushDeviceQuerySet(models.query.QuerySet):
 
 
 class WebPushDevice(Device):
-	registration_id = models.TextField(verbose_name=_("Registration ID"))
+	registration_id = models.TextField(verbose_name=_("Registration ID"), unique=SETTINGS["UNIQUE_REG_ID"])
 	p256dh = models.CharField(
 		verbose_name=_("User public encryption key"),
 		max_length=88)
